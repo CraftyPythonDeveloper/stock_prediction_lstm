@@ -10,7 +10,7 @@ from tensorflow.keras.layers import LSTM
 import numpy
 import concurrent.futures
 import os
-from sqlalchemy.exc import InterfaceError
+from sqlalchemy.exc import InterfaceError, OperationalError
 
 
 script_config = pd.read_excel("config.xlsx", sheet_name="script_config", engine='openpyxl')
@@ -31,12 +31,12 @@ SERVER = database_config[database_config["Key"] == "SERVER"].Value.item()
 DATABASE = database_config[database_config["Key"] == "DATABASE"].Value.item()
 
 # database connection
-params = urllib.parse.quote_plus("Driver={SQL Server Native Client 11.0};"
-                                 f"Server={SERVER};"
-                                 f"Database={DATABASE};"
-                                 "Trusted_connection=yes")
-engine = create_engine("mssql+pyodbc:///?odbc_connect={}".format(params))
 try:
+    params = urllib.parse.quote_plus("Driver={SQL Server Native Client 11.0};"
+                                     f"Server={SERVER};"
+                                     f"Database={DATABASE};"
+                                     "Trusted_connection=yes")
+    engine = create_engine("mssql+pyodbc:///?odbc_connect={}".format(params))
     engine.connect()
 except InterfaceError:
     engine = create_engine(f'mssql+pyodbc://{SERVER}/{DATABASE}?trusted_connection=yes&driver=ODBC+Driver+11+for+SQL'
@@ -44,8 +44,8 @@ except InterfaceError:
     engine.connect()
 
 # for sqlite
-engine = create_engine(r"sqlite:///C:\Users\Anon\PycharmProjects\stock_prediction\stock_prediction.db")
-engine.connect()
+# engine = create_engine(r"sqlite:///C:\Users\Anon\PycharmProjects\stock_prediction\stock_prediction.db")
+# engine.connect()
 
 
 def create_dataset(dataset, time_step=1):
@@ -111,9 +111,9 @@ def get_predictions(data, last_date, model, scaler, days_to_predict=10, n_steps=
     return df
 
 
-def train_model(query, symb):
-    QUERY = query
-    df = pd.read_sql(QUERY.format(symbol=symb), engine).sort_values(by="date")
+def train_model(QUERY, symb):
+    with engine.connect() as con:
+        df = pd.read_sql(QUERY.format(symbol=symb), con).sort_values(by="date")
     print("**********************************************************")
     print(f"Training model for {symb} symbol with {df.shape[0]} days")
     df1 = df.reset_index()[PREDICTION_COLUMN]
@@ -135,7 +135,8 @@ def train_model(query, symb):
     preds_df.insert(loc=1, column="symbol", value=symb)
     preds_df["timestamp"] = datetime.now()
     preds_df = preds_df.round(2)
-    preds_df.to_sql(f"{RESULTS_TABLE}", engine, if_exists="append", index=False)
+    with engine.connect() as con:
+        preds_df.to_sql(f"{RESULTS_TABLE}", con, if_exists="append", index=False)
     print(f"Done training and predicting {symb}")
 
 
@@ -153,7 +154,17 @@ def multiprocess_train(function, query, iterable_list):
 
 
 if __name__ == "__main__":
-    stock_names = [i.symbol for i in engine.execute(f"select distinct(symbol) from {HISTORY_TABLE}").fetchall()]
+    with engine.connect() as conn:
+        try:
+            old_result = conn.execute(f"select * from {RESULTS_TABLE}").fetchone()
+            if old_result:
+                ans = input(f"{RESULTS_TABLE} table already exists. Do you want to drop the table? Y/N")
+                if ans.lower() == "y":
+                    conn.execution_options(autocommit=True).execute(f"drop table {RESULTS_TABLE}")
+        except OperationalError:
+            pass
+
+        stock_names = [i.symbol for i in conn.execute(f"select distinct(symbol) from {HISTORY_TABLE}").fetchall()]
 
     # for ms sql
     QUERY = f"select [date], [{PREDICTION_COLUMN}] * from {HISTORY_TABLE} where symbol='{{symbol}}' order by date desc"
@@ -166,4 +177,3 @@ if __name__ == "__main__":
     #         f"symbol='{{symbol}}' order by date desc limit {DAYS_TO_USE_TO_TRAIN_MODEL}"
 
     multiprocess_train(train_model, QUERY, stock_names)
-

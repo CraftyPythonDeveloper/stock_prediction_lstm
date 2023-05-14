@@ -11,3 +11,5 @@ To run this code, make sure all the requirements are satisfied by using below me
 
 Once all the requirements are satisfied, open config.xlsx and edit the config to tune the model as per your requirements. Then you can double click on
 ``run.bat`` to run the code.
+
+Supported sql server is Microsoft SQL server.
